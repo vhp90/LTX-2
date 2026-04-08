@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LTX-2 Studio — AI Video Generation</title>
+  <meta name="description" content="Professional AI video generation studio powered by LTX-2. Generate, edit, and manage AI-powered audio-video content." />
+
+  <!-- Shoelace components + dark theme -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.20.1/cdn/themes/dark.css" />
+  <script type="module" src="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.20.1/cdn/shoelace-autoloader.js"></script>
+</head>
+<body>
+  <div id="app" class="flex flex-col h-screen w-full overflow-hidden bg-background-dark text-text-main font-mono">
+    <!-- Top Header (rendered by JS) -->
+    <header id="top-header" class="h-[50px] border-b border-muted flex shrink-0 justify-between items-center px-4 bg-background-dark z-10"></header>
+
+    <!-- Main content area (pages render here) -->
+    <div id="page-content" class="flex-1 overflow-hidden relative"></div>
+  </div>
+
+  <!-- Toast container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
