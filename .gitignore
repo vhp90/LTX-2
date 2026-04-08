@@ -16,6 +16,11 @@ models/
 *.pth
 *.bin
 
+# App runtime files
+app/history.json
+app/settings.json
+app/uploads/
+
 # Python
 __pycache__/
 *.py[cod]

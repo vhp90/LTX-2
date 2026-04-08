@@ -236,6 +236,12 @@ export function renderWorkspace(container) {
   // Init param values for this pipeline (persists overlapping values to avoid wiping everything)
   initParamValues(pipeline.params);
 
+  // Apply forked params from history if available
+  if (state.settings.lastForkedParams) {
+    Object.assign(paramValues, state.settings.lastForkedParams);
+    delete state.settings.lastForkedParams;
+  }
+
   const groups = groupParams(pipeline.params);
   const promptFiles = groups['prompts_and_files'] || [];
   
@@ -270,7 +276,7 @@ export function renderWorkspace(container) {
 
           <!-- Dimension Controls Injection -->
           ${pipeline.params.find(p => p.name === 'width') ? `
-            <div class="param-group" style="padding-top: var(--space-2); border-top: 1px solid var(--color-border);">
+            <div id="auto-dims-group" class="param-group" style="padding-top: var(--space-2); border-top: 1px solid var(--color-border);">
               <sl-switch id="auto-dims-switch" checked>Auto-Dimensions from Image</sl-switch>
               <span class="sublabel mt-1 block">When enabled, dimensions are inferred from the first conditioning image and clamped to LTX-2 valid multiples of 32 (max 1920x1088).</span>
             </div>
@@ -411,7 +417,7 @@ async function bindLoraControls(container) {
         <div class="flex items-center justify-between">
           <sl-select size="small" value="${lora.path}" style="flex: 1;" class="lora-select">
             <sl-option value="">-- Select LoRA --</sl-option>
-            ${availableLoras.map(a => `<sl-option value="${a.path}">${a.name}</sl-option>`).join('')}
+            ${availableLoras.map(a => `<sl-option value="${a.path}">${a.name}${a.trigger_word ? ' 🏷' : ''}</sl-option>`).join('')}
           </sl-select>
           <button class="btn-icon lora-remove" style="width: 24px; height: 24px;">
             <sl-icon name="x" class="text-accent"></sl-icon>
@@ -422,11 +428,55 @@ async function bindLoraControls(container) {
           <sl-range min="-2" max="2" step="0.05" value="${lora.strength}" style="flex: 1; --track-active-offset: 50%;" class="lora-strength"></sl-range>
           <span class="text-xs strength-display" style="width: 30px; text-align: right;">${lora.strength}</span>
         </div>
+        <div class="lora-trigger-row" style="display: none;">
+          <button class="btn-ghost lora-trigger-btn" style="width: 100%; font-size: 10px; padding: 4px 8px;">
+            <sl-icon name="tag"></sl-icon> Add Trigger to Prompt
+          </button>
+        </div>
       `;
 
       div.querySelector('.lora-select').addEventListener('sl-change', (e) => {
         selectedLoras[idx].path = e.target.value;
+        // Show/hide trigger button based on selected LoRA's trigger word
+        const loraInfo = availableLoras.find(a => a.path === e.target.value);
+        const triggerRow = div.querySelector('.lora-trigger-row');
+        if (loraInfo?.trigger_word && triggerRow) {
+          triggerRow.style.display = 'block';
+          triggerRow.dataset.trigger = loraInfo.trigger_word;
+        } else if (triggerRow) {
+          triggerRow.style.display = 'none';
+        }
       });
+
+      // Trigger button — prepend trigger word to prompt
+      div.querySelector('.lora-trigger-btn')?.addEventListener('click', () => {
+        const triggerRow = div.querySelector('.lora-trigger-row');
+        const trigger = triggerRow?.dataset.trigger;
+        if (!trigger) return;
+        const promptEl = document.querySelector('#input-prompt') || document.querySelector('sl-textarea[data-param="prompt"]');
+        if (promptEl) {
+          const current = promptEl.value || '';
+          if (!current.includes(trigger)) {
+            promptEl.value = trigger + ', ' + current;
+            paramValues['prompt'] = promptEl.value;
+            showToast(`Added trigger: "${trigger}"`);
+          } else {
+            showToast('Trigger already in prompt');
+          }
+        }
+      });
+
+      // Show trigger button if LoRA already selected and has trigger
+      if (lora.path) {
+        const loraInfo = availableLoras.find(a => a.path === lora.path);
+        if (loraInfo?.trigger_word) {
+          const triggerRow = div.querySelector('.lora-trigger-row');
+          if (triggerRow) {
+            triggerRow.style.display = 'block';
+            triggerRow.dataset.trigger = loraInfo.trigger_word;
+          }
+        }
+      }
       const rng = div.querySelector('.lora-strength');
       const disp = div.querySelector('.strength-display');
       rng.addEventListener('sl-input', (e) => {
@@ -456,18 +506,84 @@ async function bindLoraControls(container) {
 function bindPipelineSelector(container) {
   const select = container.querySelector('#pipeline-select');
   if (!select) return;
-  // Ignore the initial mount bubbled event by explicitly ensuring it's user intent
-  select.addEventListener('sl-change', (e) => {
-    // If value hasn't changed from state, ignore
-    if (state.selectedPipeline === select.value) return; 
-    
-    // Save any current parameter text values before re-rendering so they persist
+
+  select.addEventListener('sl-change', () => {
+    if (state.selectedPipeline === select.value) return;
+
+    // Save current values from DOM before switching
     collectParamValues(container);
 
     state.selectedPipeline = select.value;
-    
-    const pageContent = document.getElementById('page-content');
-    renderWorkspace(pageContent);
+    const pipeline = state.pipelines.find(p => p.id === select.value);
+    if (!pipeline) return;
+
+    // Merge new pipeline defaults — keep any values the user already set for
+    // params that exist in both pipelines (seed, prompt, loras, dimensions, etc.)
+    initParamValues(pipeline.params);
+
+    // Clean up uploaded files for params that no longer exist in the new pipeline
+    const newParamNames = new Set(pipeline.params.map(p => p.name));
+    for (const key of Object.keys(uploadedFiles)) {
+      if (!newParamNames.has(key)) {
+        delete uploadedFiles[key];
+      }
+    }
+
+    // Update description text
+    const descEl = container.querySelector('#pipeline-select + .text-xs');
+    if (descEl) descEl.textContent = pipeline.description;
+
+    // Re-render only the dynamic parameter sections (prompt stack + groups)
+    const panelBody = container.querySelector('.panel-body');
+    if (!panelBody) return;
+
+    const groups = groupParams(pipeline.params);
+    const promptFiles = groups['prompts_and_files'] || [];
+
+    // Rebuild prompt stack
+    const promptStack = panelBody.querySelector('.prompt-stack');
+    if (promptStack) {
+      promptStack.innerHTML = promptFiles.map(p => renderParamControl(p, paramValues[p.name])).join('');
+    }
+
+    // Show/hide auto-dimensions based on whether width param exists
+    let autoDimsGroup = panelBody.querySelector('#auto-dims-group');
+    const hasWidth = pipeline.params.find(p => p.name === 'width');
+    if (hasWidth && !autoDimsGroup) {
+      const div = document.createElement('div');
+      div.id = 'auto-dims-group';
+      div.className = 'param-group';
+      div.style.cssText = 'padding-top: var(--space-2); border-top: 1px solid var(--color-border);';
+      div.innerHTML = `
+        <sl-switch id="auto-dims-switch" checked>Auto-Dimensions from Image</sl-switch>
+        <span class="sublabel mt-1 block">When enabled, dimensions are inferred from the first conditioning image and clamped to LTX-2 valid multiples of 32 (max 1920x1088).</span>
+      `;
+      promptStack?.after(div);
+    } else if (!hasWidth && autoDimsGroup) {
+      autoDimsGroup.remove();
+    }
+
+    // Remove old sl-details groups and rebuild
+    panelBody.querySelectorAll('sl-details').forEach(el => el.remove());
+
+    Object.entries(groups).filter(([k]) => k !== 'prompts_and_files').forEach(([groupKey, params]) => {
+      const details = document.createElement('sl-details');
+      if (groupKey === 'generation') details.setAttribute('open', '');
+      details.setAttribute('summary', GROUP_LABELS[groupKey] || groupKey);
+      details.innerHTML = `
+        <div id="group-${groupKey}" style="display: flex; flex-direction: column; gap: var(--space-4);">
+          ${params.map(p => renderParamControl(p, paramValues[p.name])).join('')}
+        </div>
+      `;
+      panelBody.appendChild(details);
+    });
+
+    // Re-bind only the parameter-related events (not canvas, not loras, not sidebar toggles)
+    bindDurationFramesSync(container);
+    bindAutoDimensions(container);
+    bindParamSyncEvents(container);
+    bindFileUploads(container);
+    // Execute button is already bound to the same #execute-btn element — no rebind needed
   });
 }
 
@@ -717,18 +833,48 @@ function bindExecuteButton(container) {
       return;
     }
 
-    const request = {
-      pipeline: state.selectedPipeline,
-      params: { 
-        ...paramValues, 
-        custom_loras: selectedLoras.filter(l => l.path), 
-      },
-      quantization: container.querySelector('#quantization-select')?.value || 'none',
-    };
-
     try {
       btn.disabled = true;
+      btn.innerHTML = '<div class="loading-spinner"></div> PREPARING...';
+
+      // Upload any files first and collect their server paths
+      const fileParams = {};
+      for (const [paramName, fileOrFiles] of Object.entries(uploadedFiles)) {
+        if (Array.isArray(fileOrFiles)) {
+          // image_list — upload each, collect paths with frame indices
+          const uploaded = [];
+          for (let i = 0; i < fileOrFiles.length; i++) {
+            const fd = new FormData();
+            fd.append('file', fileOrFiles[i]);
+            const res = await api.post('/api/upload', fd, true);
+            uploaded.push({
+              path: res.path,
+              frame_idx: i === 0 ? 0 : i,  // first image at frame 0, rest at subsequent indices
+              strength: 1.0,
+              crf: 33,
+            });
+          }
+          fileParams[paramName] = uploaded;
+        } else if (fileOrFiles instanceof File) {
+          // single file (video/audio)
+          const fd = new FormData();
+          fd.append('file', fileOrFiles);
+          const res = await api.post('/api/upload', fd, true);
+          fileParams[paramName] = res.path;
+        }
+      }
+
       btn.innerHTML = '<div class="loading-spinner"></div> GENERATING...';
+
+      const request = {
+        pipeline: state.selectedPipeline,
+        params: { 
+          ...paramValues,
+          ...fileParams,
+          custom_loras: selectedLoras.filter(l => l.path), 
+        },
+        quantization: state.settings.quantization || 'none',
+      };
 
       const progressEl = container.querySelector('#generation-progress');
       const progressBar = container.querySelector('#progress-bar');
@@ -744,20 +890,26 @@ function bindExecuteButton(container) {
       const result = await api.post('/api/generate', request);
 
       if (result.job_id) {
+        let sseCompleted = false;
         const es = api.sse(`/api/generate/${result.job_id}/progress`, (data) => {
           if (progressBar) progressBar.value = data.progress || 0;
           if (progressLabel) progressLabel.textContent = data.stage || 'Processing...';
           if (progressPct) progressPct.textContent = `${Math.round(data.progress || 0)}%`;
 
           if (data.status === 'complete') {
+            sseCompleted = true;
             es.close();
             onGenerationComplete(container, data);
           } else if (data.status === 'error') {
+            sseCompleted = true;
             es.close();
             onGenerationError(container, data.error);
           }
         }, () => {
-          pollJobStatus(result.job_id, container);
+          // Only fall back to polling if SSE died before we got a result
+          if (!sseCompleted) {
+            pollJobStatus(result.job_id, container);
+          }
         });
       }
     } catch (err) {
@@ -786,8 +938,10 @@ function onGenerationComplete(container, data) {
     if (videoCont) videoCont.style.display = 'block';
     video.load();
     video.play().catch(e => console.log('Autoplay blocked:', e));
+    showToast('RENDER_COMPLETE');
+  } else {
+    showToast('Generation finished (no output — pipeline may be in simulation mode)', 'error');
   }
-  showToast('RENDER_COMPLETE');
 }
 
 function onGenerationError(container, errorMsg) {
@@ -799,6 +953,9 @@ function onGenerationError(container, errorMsg) {
     btn.innerHTML = '<sl-icon name="lightning-charge"></sl-icon> EXECUTE RENDER';
   }
   if (progressEl) progressEl.classList.add('hidden');
+  if (errorMsg) {
+    showToast(`GENERATION_ERROR: ${errorMsg}`, 'error');
+  }
 }
 
 async function pollJobStatus(jobId, container) {

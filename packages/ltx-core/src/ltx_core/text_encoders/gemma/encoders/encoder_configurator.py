@@ -159,17 +159,42 @@ def create_and_populate(module: GemmaTextEncoder) -> GemmaTextEncoder:
 
     config = model.config.text_config
     dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
-    base = config.rope_local_base_freq
-    local_rope_freqs = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.int64).to(dtype=torch.float) / dim))
-    inv_freqs, _ = ROPE_INIT_FUNCTIONS[config.rope_scaling["rope_type"]](config)
 
-    positions_length = len(v_model.embeddings.position_ids[0])
+    # transformers 5.x merged rope into a single Gemma3RotaryEmbedding with
+    # sliding_attention_inv_freq / full_attention_inv_freq buffers.
+    # transformers <5.0 has separate rotary_emb_local + rotary_emb with inv_freq.
+    has_legacy_rope = hasattr(l_model, "rotary_emb_local")
+
+    if has_legacy_rope:
+        # transformers <5.0
+        base = config.rope_local_base_freq
+        local_rope_freqs = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.int64).to(dtype=torch.float) / dim))
+        inv_freqs, _ = ROPE_INIT_FUNCTIONS[config.rope_scaling["rope_type"]](config)
+        l_model.rotary_emb_local.register_buffer("inv_freq", local_rope_freqs)
+        l_model.rotary_emb.register_buffer("inv_freq", inv_freqs)
+    else:
+        # transformers >=5.0 — single rotary_emb with sliding/full attention buffers
+        # Materialize the inv_freq buffers from the config thetas
+        rope_scaling = config.rope_scaling
+        sliding_theta = rope_scaling["sliding_attention"]["rope_theta"]
+        full_theta = rope_scaling["full_attention"]["rope_theta"]
+        freq_range = torch.arange(0, dim, 2, dtype=torch.int64).to(dtype=torch.float)
+        sliding_inv_freq = 1.0 / (sliding_theta ** (freq_range / dim))
+        full_inv_freq = 1.0 / (full_theta ** (freq_range / dim))
+        re = l_model.rotary_emb
+        re.register_buffer("sliding_attention_inv_freq", sliding_inv_freq)
+        re.register_buffer("sliding_attention_original_inv_freq", sliding_inv_freq.clone())
+        re.register_buffer("full_attention_inv_freq", full_inv_freq)
+        re.register_buffer("full_attention_original_inv_freq", full_inv_freq.clone())
+
+    # Vision tower position_ids
+    positions_length = v_model.embeddings.position_ids.shape[-1]
     position_ids = torch.arange(positions_length, dtype=torch.long, device="cpu").unsqueeze(0)
     v_model.embeddings.register_buffer("position_ids", position_ids)
-    embed_scale = torch.tensor(model.config.text_config.hidden_size**0.5, device="cpu")
+
+    # Embed scale
+    embed_scale = torch.tensor(config.hidden_size ** 0.5, device="cpu")
     l_model.embed_tokens.register_buffer("embed_scale", embed_scale)
-    l_model.rotary_emb_local.register_buffer("inv_freq", local_rope_freqs)
-    l_model.rotary_emb.register_buffer("inv_freq", inv_freqs)
 
     return module
 

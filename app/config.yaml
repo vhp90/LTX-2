@@ -16,7 +16,7 @@ settings:
 models:
   checkpoints:
     # LTX-2.3 22B Checkpoint (approx 22GB)
-    - https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-22b-dev.safetensors
+    - https://huggingface.co/Lightricks/LTX-2.3-fp8/blob/main/ltx-2.3-22b-dev-fp8.safetensors
 
   loras:
     # Distilled LoRA for Stage 2
@@ -33,4 +33,4 @@ models:
 
   gemma:
     # Gemma 3 Text Encoder (4B-IT) - Entire folder will be downloaded
-    - https://huggingface.co/google/gemma-3-4b-it
+    - https://huggingface.co/grimjim/gemma-3-12b-it-norm-preserved-biprojected-abliterated

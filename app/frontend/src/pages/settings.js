@@ -159,8 +159,14 @@ export function renderSettings(container) {
           <div style="display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--text-xs); color: var(--color-text-muted);">
             <div class="flex justify-between">
               <span>GPU:</span>
-              <span id="sys-gpu" class="${state.gpuAvailable ? 'text-primary' : ''}">${state.gpuAvailable ? 'Available' : 'Not Available'}</span>
+              <span id="sys-gpu" class="${state.gpuAvailable ? 'text-primary' : ''}">${state.modelStatus?.gpu_name || (state.gpuAvailable ? 'Available' : 'Not Detected')}</span>
             </div>
+            ${state.modelStatus?.gpu_memory_gb ? `
+            <div class="flex justify-between">
+              <span>VRAM:</span>
+              <span class="text-primary">${state.modelStatus.gpu_memory_gb} GB</span>
+            </div>
+            ` : ''}
             <div class="flex justify-between">
               <span>Backend:</span>
               <span id="sys-backend">Checking...</span>
@@ -191,26 +197,24 @@ export function renderSettings(container) {
 // ============================================================================
 //  MODEL STATUS RENDERER
 // ============================================================================
-const REQUIRED_MODELS = [
-  { key: 'checkpoint', name: 'LTX-2.3 Checkpoint', file: 'ltx-2.3-22b-dev.safetensors' },
-  { key: 'distilled_lora', name: 'Distilled LoRA', file: 'ltx-2.3-22b-distilled-lora-384.safetensors' },
-  { key: 'spatial_upsampler', name: 'Spatial Upsampler', file: 'ltx-2.3-spatial-upscaler-x2-1.1.safetensors' },
-  { key: 'gemma', name: 'Gemma 3 Encoder', file: 'google/gemma-3-4b-it' },
-];
 
 function renderModelStatus(status) {
-  return REQUIRED_MODELS.map(model => {
-    const modelStatus = status?.models?.[model.key];
-    const isReady = modelStatus === 'ready' || modelStatus === true;
-    const isDownloading = modelStatus === 'downloading';
-    const badge = isReady ? 'ready' : isDownloading ? 'downloading' : 'missing';
-    const label = isReady ? 'READY' : isDownloading ? 'DL...' : 'MISSING';
+  if (!status?.models || Object.keys(status.models).length === 0) {
+    return '<div class="sublabel">No model data available. Start the backend to check.</div>';
+  }
+
+  return Object.entries(status.models).map(([key, modelStatus]) => {
+    const isReady = modelStatus === 'ready' || modelStatus === 'exists' || modelStatus === true;
+    const badge = isReady ? 'ready' : 'missing';
+    const label = isReady ? 'READY' : 'MISSING';
+    // Clean up the display name
+    const displayName = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
     return `
       <div class="model-status-item">
         <div>
-          <div class="model-status-name">${model.name}</div>
-          <div class="sublabel">${model.file}</div>
+          <div class="model-status-name">${displayName}</div>
+          <div class="sublabel">${key}</div>
         </div>
         <span class="model-status-badge ${badge}">${label}</span>
       </div>

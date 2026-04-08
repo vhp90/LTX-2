@@ -47,6 +47,10 @@ history_manager = HistoryManager()
 # Job tracking
 jobs: dict[str, dict[str, Any]] = {}
 
+# Pipeline cache — keeps models loaded in GPU memory between generations
+_pipeline_cache: dict[str, Any] = {}  # { cache_key: pipeline_instance }
+_pipeline_cache_key: str | None = None
+
 # Upload storage
 UPLOAD_DIR = APP_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -243,10 +247,15 @@ def _run_generation(job_id: str, pipeline_id: str, params: dict, quantization: s
         output_path = output_dir / output_filename
 
         # Build quantization policy
+        # Auto-detect fp8 checkpoint: if quantization is "none" but checkpoint is fp8, use fp8-cast
         quant_policy = None
-        if quantization == "fp8-cast":
+        checkpoint_path = model_paths.get("checkpoint", "")
+        is_fp8_checkpoint = "fp8" in Path(checkpoint_path).name.lower() if checkpoint_path else False
+
+        if quantization == "fp8-cast" or (quantization == "none" and is_fp8_checkpoint):
             from ltx_core.quantization import QuantizationPolicy
             quant_policy = QuantizationPolicy.fp8_cast()
+            logger.info("Using fp8-cast quantization%s", " (auto-detected from checkpoint)" if quantization == "none" else "")
         elif quantization == "fp8-scaled-mm":
             from ltx_core.quantization import QuantizationPolicy
             quant_policy = QuantizationPolicy.fp8_scaled_mm()
@@ -267,6 +276,7 @@ def _run_generation(job_id: str, pipeline_id: str, params: dict, quantization: s
         # Dispatch to the correct pipeline
         if pipeline_id == "ti2vid_two_stages":
             from ltx_pipelines.ti2vid_two_stages import TI2VidTwoStagesPipeline
+            from ltx_pipelines.utils.args import ImageConditioningInput
             
             # Map custom LoRAs from request
             custom_loras = []
@@ -281,35 +291,69 @@ def _run_generation(job_id: str, pipeline_id: str, params: dict, quantization: s
 
             # Make distilled_lora dynamically optional to allow dev-model native testing
             distilled_path = model_paths.get("distilled_lora")
-            d_lora = [LoraPathStrengthAndSDOps(path=distilled_path, strength=1.0, sd_ops=None)] if distilled_path else None
+            d_lora = [LoraPathStrengthAndSDOps(path=distilled_path, strength=1.0, sd_ops=LTXV_LORA_COMFY_RENAMING_MAP)] if distilled_path else None
 
-            pipeline = TI2VidTwoStagesPipeline(
-                checkpoint_path=model_paths["checkpoint"],
-                distilled_lora=d_lora,
-                spatial_upsampler_path=model_paths.get("spatial_upsampler"),
-                gemma_root=model_paths.get("gemma"),
-                loras=custom_loras,
-                quantization=quant_policy,
-                torch_compile=settings.torchCompile,
-            )
+            # Cache key: pipeline_id + checkpoint + loras + quantization + compile
+            lora_sig = tuple(sorted((l.path, l.strength) for l in custom_loras))
+            cache_key = f"{pipeline_id}:{checkpoint_path}:{lora_sig}:{quant_policy}:{settings.torchCompile}"
+
+            global _pipeline_cache, _pipeline_cache_key
+            if _pipeline_cache_key == cache_key and _pipeline_cache.get("pipeline") is not None:
+                pipeline = _pipeline_cache["pipeline"]
+                logger.info("Reusing cached pipeline (models stay in GPU memory)")
+            else:
+                # Evict old cache if different config
+                _pipeline_cache.clear()
+                _pipeline_cache_key = None
+
+                pipeline = TI2VidTwoStagesPipeline(
+                    checkpoint_path=model_paths["checkpoint"],
+                    distilled_lora=d_lora,
+                    spatial_upsampler_path=model_paths.get("spatial_upsampler"),
+                    gemma_root=model_paths.get("gemma"),
+                    loras=custom_loras,
+                    quantization=quant_policy,
+                    torch_compile=settings.torchCompile,
+                )
+                _pipeline_cache["pipeline"] = pipeline
+                _pipeline_cache_key = cache_key
+                logger.info("Built new pipeline and cached it")
             jobs[job_id]["stage"] = "Generating video..."
             jobs[job_id]["progress"] = 20
 
+            # Build image conditionings from uploaded files
+            images = []
+            for img_data in params.get("images", []):
+                if isinstance(img_data, dict) and img_data.get("path"):
+                    images.append(ImageConditioningInput(
+                        path=img_data["path"],
+                        frame_idx=int(img_data.get("frame_idx", 0)),
+                        strength=float(img_data.get("strength", 1.0)),
+                        crf=int(img_data.get("crf", 33)),
+                    ))
+                elif isinstance(img_data, str):
+                    # Simple path string — condition on frame 0
+                    images.append(ImageConditioningInput(
+                        path=img_data, frame_idx=0, strength=1.0, crf=33,
+                    ))
+
             tiling_config = TilingConfig.default()
-            video, audio = pipeline(
-                prompt=params.get("prompt", ""),
-                negative_prompt=params.get("negative_prompt", ""),
-                seed=seed_val,
-                height=int(params.get("height", 1024)),
-                width=int(params.get("width", 1536)),
-                num_frames=int(params.get("num_frames", 121)),
-                frame_rate=float(params.get("frame_rate", 24.0)),
-                num_inference_steps=int(params.get("num_inference_steps", 30)),
-                video_guider_params=_build_guider("video"),
-                audio_guider_params=_build_guider("audio"),
-                images=[],
-                tiling_config=tiling_config,
-            )
+            with torch.no_grad():
+                video, audio = pipeline(
+                    prompt=params.get("prompt", ""),
+                    negative_prompt=params.get("negative_prompt", ""),
+                    seed=seed_val,
+                    height=int(params.get("height", 1024)),
+                    width=int(params.get("width", 1536)),
+                    num_frames=int(params.get("num_frames", 121)),
+                    frame_rate=float(params.get("frame_rate", 24.0)),
+                    num_inference_steps=int(params.get("num_inference_steps", 30)),
+                    video_guider_params=_build_guider("video"),
+                    audio_guider_params=_build_guider("audio"),
+                    images=images,
+                    tiling_config=tiling_config,
+                    enhance_prompt=bool(params.get("enhance_prompt", False)),
+                )
 
             jobs[job_id]["stage"] = "Encoding output..."
             jobs[job_id]["progress"] = 90
@@ -326,11 +370,13 @@ def _run_generation(job_id: str, pipeline_id: str, params: dict, quantization: s
 
         # (Other pipelines follow the same pattern — dispatched similarly)
         else:
-            # For now, other pipelines use the same simulation
+            # Unsupported pipeline — run simulation for UI testing
+            logger.warning(f"Pipeline '{pipeline_id}' not yet implemented in backend. Running simulation.")
             for i in range(10):
                 time.sleep(0.3)
                 jobs[job_id]["progress"] = 20 + i * 8
                 jobs[job_id]["stage"] = f"Pipeline {pipeline_id}: step {i + 1}/10..."
+            output_filename = None  # No actual output
 
         jobs[job_id]["status"] = "complete"
         jobs[job_id]["progress"] = 100

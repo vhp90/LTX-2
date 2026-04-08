@@ -156,9 +156,21 @@ class ModelManager:
             result["gpu_available"] = torch.cuda.is_available()
             if result["gpu_available"]:
                 result["gpu_name"] = torch.cuda.get_device_name(0)
-                result["gpu_memory_gb"] = round(torch.cuda.get_device_properties(0).total_mem / 1e9, 1)
+                result["gpu_memory_gb"] = round(torch.cuda.get_device_properties(0).total_memory / 1e9, 1)
         except ImportError:
+            # torch not installed yet — fall back to nvidia-smi for GPU detection
             result["gpu_available"] = False
+            try:
+                import subprocess as _sp
+                out = _sp.check_output(["nvidia-smi", "--query-gpu=name,memory.total",
+                                        "--format=csv,noheader,nounits"], text=True).strip()
+                if out:
+                    parts = out.split(",")
+                    result["gpu_available"] = True
+                    result["gpu_name"] = parts[0].strip()
+                    result["gpu_memory_gb"] = round(float(parts[1].strip()) / 1024, 1)
+            except Exception:
+                pass
 
         return result
 
@@ -173,16 +185,39 @@ class ModelManager:
             category = info["category"]
             local_dir = info["local_dir"]
             progress_base = (idx / total) * 100
-            
-            # Resolve actual filename
+
+            # For non-HF URLs (e.g. CivitAI): check if ANY safetensors already
+            # exists in the category dir BEFORE doing a slow network HEAD request.
             if "huggingface.co" not in info["url"]:
+                existing = list(local_dir.glob("*.safetensors")) if local_dir.exists() else []
+                # Match by hash embedded in the placeholder filename we generated earlier
+                placeholder = info["filename"]  # e.g. model_<hash>.safetensors
+                matched = next((f for f in existing if f.name == placeholder), None)
+                if matched is None and existing:
+                    # Filename not yet resolved — check if dir has enough files
+                    # (one per URL in this category). Count URLs vs existing files.
+                    urls_in_cat = sum(
+                        1 for m in models_list
+                        if m["category"] == category and "huggingface.co" not in m["url"]
+                    )
+                    if len(existing) >= urls_in_cat:
+                        # All files for this category already present, skip HEAD
+                        key = placeholder
+                        results[key] = "exists"
+                        if on_progress: on_progress(key, progress_base + (100 / total), f"{key}: Already exists")
+                        continue
+                elif matched:
+                    results[placeholder] = "exists"
+                    if on_progress: on_progress(placeholder, progress_base + (100 / total), f"{placeholder}: Already exists")
+                    continue
+                # Need to download — resolve real filename via HEAD now
                 filename = fetch_civitai_filename(info["url"])
                 info["filename"] = filename
             else:
                 filename = info["filename"]
-                
+
             local_path = local_dir / filename
-            
+
             if info["is_directory"]:
                 if local_path.exists() and any(local_path.iterdir()):
                     results[filename] = "exists"
@@ -210,13 +245,21 @@ class ModelManager:
                     if civitai_token and "civitai.com" in info["url"]:
                         req.add_header("Authorization", f"Bearer {civitai_token}")
                         
-                    with urllib.request.urlopen(req) as response, open(local_path, 'wb') as out_file:
-                        chunk_size = 8192
-                        # could handle progress if needed
-                        while True:
-                            chunk = response.read(chunk_size)
-                            if not chunk: break
-                            out_file.write(chunk)
+                    with urllib.request.urlopen(req) as response:
+                        # Get real filename from response headers (Content-Disposition)
+                        resp_headers = dict(response.getheaders()) if hasattr(response, 'getheaders') else {}
+                        real_name = get_filename_from_url_and_headers(info["url"], resp_headers)
+                        if real_name and real_name != filename:
+                            filename = real_name
+                            info["filename"] = real_name
+                            local_path = local_dir / real_name
+
+                        with open(local_path, 'wb') as out_file:
+                            while True:
+                                chunk = response.read(65536)
+                                if not chunk:
+                                    break
+                                out_file.write(chunk)
 
                 results[filename] = "downloaded"
             except Exception as e:
@@ -271,9 +314,26 @@ class ModelManager:
                 # We skip the distilled lora as it's automatically handled by the pipeline
                 if "distilled" in file.name:
                     continue
+                # Try to read trigger word from safetensors metadata
+                trigger_word = ""
+                try:
+                    from safetensors import safe_open
+                    with safe_open(str(file), framework="pt") as f:
+                        meta = f.metadata() or {}
+                        # Common metadata keys for trigger words
+                        trigger_word = (
+                            meta.get("ss_trigger_words", "") or
+                            meta.get("trigger_word", "") or
+                            meta.get("activation_text", "") or
+                            meta.get("modelspec.trigger_phrase", "") or
+                            ""
+                        )
+                except Exception:
+                    pass
                 loras.append({
-                    "name": file.name,
+                    "name": file.stem,  # Use stem (no extension) for cleaner display
                     "path": str(file),
-                    "size_mb": round(file.stat().st_size / 1024 / 1024, 1)
+                    "size_mb": round(file.stat().st_size / 1024 / 1024, 1),
+                    "trigger_word": trigger_word,
                 })
         return loras

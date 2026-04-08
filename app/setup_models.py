@@ -22,8 +22,8 @@ import os
 import sys
 from pathlib import Path
 
-# Add project root to path
-PROJECT_ROOT = Path(__file__).resolve().parent
+# Add project root to path (one directory up from app/)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 logging.basicConfig(
@@ -32,42 +32,6 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("setup-models")
-
-# ============================================================================
-#  MODEL DEFINITIONS
-# ============================================================================
-# All models required for the LTX-2.3 pipeline
-MODELS = {
-    "checkpoint": {
-        "name": "LTX-2.3 Checkpoint (22B)",
-        "hf_repo": "Lightricks/LTX-2",
-        "hf_filename": "ltx-2.3-22b-dev.safetensors",
-        "local_subdir": "checkpoints",
-        "size_approx": "~22 GB",
-    },
-    "distilled_lora": {
-        "name": "Distilled LoRA (Stage 2)",
-        "hf_repo": "Lightricks/LTX-2",
-        "hf_filename": "ltx-2.3-22b-distilled-lora-384.safetensors",
-        "local_subdir": "loras",
-        "size_approx": "~400 MB",
-    },
-    "spatial_upsampler": {
-        "name": "Spatial Upsampler (2×)",
-        "hf_repo": "Lightricks/LTX-2",
-        "hf_filename": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
-        "local_subdir": "upsampler",
-        "size_approx": "~100 MB",
-    },
-    "gemma_encoder": {
-        "name": "Gemma 3 Text Encoder (4B-IT)",
-        "hf_repo": "google/gemma-3-4b-it",
-        "is_full_repo": True,
-        "local_subdir": "gemma",
-        "size_approx": "~8 GB",
-    },
-}
-
 
 # ============================================================================
 #  TOKEN RESOLUTION
@@ -181,47 +145,28 @@ def download_full_repo(
 # ============================================================================
 def main():
     parser = argparse.ArgumentParser(
-        description="Download required models for LTX-2 Studio",
+        description="Download required models for LTX-2 Web Studio natively from config.yaml",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "--models-dir",
-        type=str,
-        default=str(Path.home() / "ltx-models"),
-        help="Base directory for model storage (default: ~/ltx-models)",
+        "--models-dir", type=str, default=None,
+        help="Override base directory for model storage",
     )
     parser.add_argument(
-        "--hf-token",
-        type=str,
-        default=None,
+        "--hf-token", type=str, default=None,
         help="HuggingFace API token (can also use HF_TOKEN env var)",
     )
     parser.add_argument(
-        "--dry-run",
-        action="store_true",
+        "--dry-run", action="store_true",
         help="Preview what would be downloaded without downloading",
-    )
-    parser.add_argument(
-        "--only",
-        type=str,
-        nargs="+",
-        choices=list(MODELS.keys()),
-        default=None,
-        help="Only download specific models",
     )
     args = parser.parse_args()
 
-    base_dir = Path(args.models_dir).expanduser()
-
-    print()
+    print("\n" + "=" * 60)
+    print("  LTX-2 Studio — Model Setup (Directly targeting config.yaml)")
     print("=" * 60)
-    print("  LTX-2 Studio — Model Setup")
-    print("=" * 60)
-    print(f"  Models directory: {base_dir}")
-    print(f"  Dry run: {args.dry_run}")
-    print()
 
-    # Resolve token
+    # Resolve token securely
     token = resolve_hf_token(args.hf_token)
     if not token and not args.dry_run:
         logger.warning(
@@ -229,53 +174,52 @@ def main():
             "Set HF_TOKEN in environment or run: huggingface-cli login"
         )
 
-    # Download models
-    models_to_download = args.only or list(MODELS.keys())
-    results = {}
-    total = len(models_to_download)
-
-    for idx, key in enumerate(models_to_download, 1):
-        info = MODELS[key]
-        print(f"[{idx}/{total}] {info['name']} ({info['size_approx']})")
-
-        local_dir = base_dir / info["local_subdir"]
-
-        if info.get("is_full_repo"):
-            success = download_full_repo(
-                repo_id=info["hf_repo"],
-                local_dir=local_dir,
-                token=token,
-                dry_run=args.dry_run,
-            )
-        else:
-            success = download_single_file(
-                repo_id=info["hf_repo"],
-                filename=info["hf_filename"],
-                local_dir=local_dir,
-                token=token,
-                dry_run=args.dry_run,
-            )
-
-        results[key] = "ok" if success else "failed"
-        print()
-
-    # Summary
-    print("=" * 60)
-    print("  Summary")
-    print("=" * 60)
-    for key, status in results.items():
-        icon = "✅" if status == "ok" else "❌"
-        print(f"  {icon} {MODELS[key]['name']}: {status}")
-
-    failed = [k for k, v in results.items() if v != "ok"]
-    if failed:
-        print(f"\n  ⚠️  {len(failed)} model(s) failed to download.")
+    try:
+        from app.backend.config import AppSettings
+        from app.backend.models import ModelManager
+    except ImportError as e:
+        logger.error(f"Failed to import app modules: {e}")
         sys.exit(1)
-    else:
-        print(f"\n  🎉 All {total} models ready!")
-        print(f"  📁 Location: {base_dir}")
-    print()
 
+    settings = AppSettings()
+    # Optionally override models_dir
+    if args.models_dir:
+        settings.models_dir = args.models_dir
+
+    manager = ModelManager(settings)
+    yaml_config = manager.get_yaml_config()
+    
+    print(f"  Configuration Loaded: {manager.config_path}")
+    print(f"  Base Directory: {Path(yaml_config.get('settings', {}).get('models_dir', settings.models_dir)).expanduser()}")
+    print(f"  Dry run active: {args.dry_run}\n")
+
+    if args.dry_run:
+        models = manager.fetch_models_list()
+        for idx, m in enumerate(models, 1):
+            print(f"[{idx}] Would Download: {m['url']} -> {m['local_dir'].name}")
+        print("\n  📋 Dry-run complete.")
+        return
+
+    # Trigger actual native pipeline sweep
+    def _print_progress(filename, pct, status_msg):
+        print(f"\r  [{pct:3.0f}%] {status_msg}", end="", flush=True)
+
+    print("Initiating direct config.yaml synchronization...")
+    results = manager.download_all(hf_token=token, on_progress=_print_progress)
+    print("\n\n" + "=" * 60)
+    print("  Synchronization Summary")
+    print("=" * 60)
+    
+    failed = 0
+    for name, result in results.items():
+        if result in ("downloaded", "exists"):
+            print(f"  ✅ {name}: {result}")
+        else:
+            print(f"  ❌ {name}: {result}")
+            failed += 1
+
+    if failed:
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

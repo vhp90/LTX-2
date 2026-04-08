@@ -148,7 +148,7 @@ function renderHeader() {
         <span>STATUS:</span>
         <span class="text-primary flex items-center gap-1 font-bold">
           <span class="status-dot ${state.gpuAvailable ? '' : 'offline'}" style="width:6px;height:6px;border-radius:50%;background:currentColor;"></span>
-          ${state.gpuAvailable ? 'GPU READY' : 'CPU ONLY'}
+          ${state.gpuAvailable ? (state.modelStatus?.gpu_name || 'GPU READY') : 'CPU ONLY'}
         </span>
       </div>
     </div>

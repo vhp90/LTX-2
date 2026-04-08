@@ -7,6 +7,7 @@ from ltx_core.model.transformer.rope import LTXRopeType, apply_rotary_emb
 
 memory_efficient_attention = None
 flash_attn_interface = None
+sage_attn_func = None
 try:
     from xformers.ops import memory_efficient_attention
 except ImportError:
@@ -17,6 +18,11 @@ try:
         import flash_attn_interface
 except ImportError:
     flash_attn_interface = None
+try:
+    from sageattention import sageattn
+    sage_attn_func = sageattn
+except ImportError:
+    sage_attn_func = None
 
 
 class AttentionCallable(Protocol):
@@ -116,10 +122,44 @@ class FlashAttention3(AttentionCallable):
         return out
 
 
+class SageAttention(AttentionCallable):
+    """SageAttention 2 — fast quantized attention with no quality loss.
+    Uses INT8 quantization for Q/K and FP8 for P*V internally,
+    achieving ~2-3x speedup over PyTorch SDPA with identical output quality.
+    """
+    def __call__(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        heads: int,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if sage_attn_func is None:
+            raise RuntimeError("SageAttention was selected but `sageattention` is not installed.")
+
+        b, _, dim_head = q.shape
+        dim_head //= heads
+
+        # sageattn expects [B, H, N, D]
+        q, k, v = (t.view(b, -1, heads, dim_head).transpose(1, 2) for t in (q, k, v))
+
+        if mask is not None:
+            if mask.ndim == 2:
+                mask = mask.unsqueeze(0)
+            if mask.ndim == 3:
+                mask = mask.unsqueeze(1)
+
+        out = sage_attn_func(q, k, v, attn_mask=mask, is_causal=False)
+        out = out.transpose(1, 2).reshape(b, -1, heads * dim_head)
+        return out
+
+
 class AttentionFunction(Enum):
     PYTORCH = "pytorch"
     XFORMERS = "xformers"
     FLASH_ATTENTION_3 = "flash_attention_3"
+    SAGE_ATTENTION = "sage_attention"
     DEFAULT = "default"
 
     def to_callable(self) -> AttentionCallable:
@@ -131,9 +171,14 @@ class AttentionFunction(Enum):
             return XFormersAttention()
         elif self is AttentionFunction.FLASH_ATTENTION_3:
             return FlashAttention3()
+        elif self is AttentionFunction.SAGE_ATTENTION:
+            return SageAttention()
         else:
-            # Default behavior: XFormers if installed else - PyTorch
-            return XFormersAttention() if memory_efficient_attention is not None else PytorchAttention()
+            # Default: PyTorch SDPA (uses cuDNN/Flash backends automatically on modern GPUs)
+            # SageAttention if explicitly installed, otherwise PyTorch SDPA
+            if sage_attn_func is not None:
+                return SageAttention()
+            return PytorchAttention()
 
 
 class Attention(torch.nn.Module):

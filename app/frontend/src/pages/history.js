@@ -131,16 +131,39 @@ function renderHistoryGrid(container, items) {
       </div>
       <div class="card-meta">
         <span class="card-prompt">${escapeHtml(item.prompt || 'No prompt')}</span>
-        <span class="card-badge ${item.status === 'error' ? 'error' : ''}">${item.status === 'error' ? 'FAILED' : formatDuration(item.duration)}</span>
+        <div class="flex items-center gap-2">
+          <span class="card-badge ${item.status === 'error' ? 'error' : ''}">${item.status === 'error' ? 'FAILED' : formatDuration(item.duration)}</span>
+          <button class="btn-icon card-delete" data-id="${item.id}" title="Delete" style="width: 20px; height: 20px; opacity: 0.4;">
+            <sl-icon name="trash" style="font-size: 12px; color: var(--color-accent);"></sl-icon>
+          </button>
+        </div>
       </div>
     </div>
   `).join('');
 
   // Bind card clicks
   grid.querySelectorAll('.card').forEach(card => {
-    card.addEventListener('click', () => {
+    card.addEventListener('click', (e) => {
+      // Don't open detail if delete button was clicked
+      if (e.target.closest('.card-delete')) return;
       const idx = parseInt(card.dataset.index);
       showDetail(container, items[idx]);
+    });
+  });
+
+  // Bind delete buttons
+  grid.querySelectorAll('.card-delete').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.id;
+      try {
+        await api.del(`/api/history/${id}`);
+        historyItems = historyItems.filter(i => i.id !== id);
+        renderHistoryGrid(container, historyItems);
+        showToast('Generation deleted');
+      } catch {
+        showToast('Failed to delete', 'error');
+      }
     });
   });
 }
@@ -181,7 +204,7 @@ function showDetail(container, item) {
 
       <div class="flex justify-between" style="font-size: 10px; color: var(--color-text-muted);">
         <span>${item.created_at || ''}</span>
-        <span>${item.status}</span>
+        <span class="${item.status === 'error' ? 'text-accent' : ''}">${item.status}${item.error ? ': ' + escapeHtml(item.error) : ''}</span>
       </div>
     </div>
   `;
