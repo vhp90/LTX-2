@@ -169,7 +169,6 @@ class TrainingSupervisor:
         step = int(step_str)
         
         if step in manifest.get("uploaded_checkpoints", []):
-            logger.info(f"Step {step} checkpoint already backed up to HF. Skipping upload.")
             return
 
         state_path = ckpt_path.parent / f"training_state_step_{step_str}.pt"
@@ -226,7 +225,7 @@ class TrainingSupervisor:
         log_file_path = self.logs_dir / f"training_{timestamp}.log"
         logger.info(f"Logging training run output to {log_file_path}")
 
-        cmd = ["uv", "run", "python", "packages/ltx-trainer/scripts/train.py", str(self.config_path), "--disable-progress-bars"]
+        cmd = ["uv", "run", "python", "packages/ltx-trainer/scripts/train.py", str(self.config_path)]
         logger.info(f"Launching training command: {' '.join(cmd)}")
 
         env = os.environ.copy()

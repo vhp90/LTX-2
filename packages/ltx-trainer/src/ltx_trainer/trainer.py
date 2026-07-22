@@ -295,7 +295,6 @@ class LtxvTrainer:
                             f"Time/Step: {step_time:.2f}s, ETA: {total_time}"
                         )
                         logger.info(msg)
-                        print(msg, flush=True)
 
                     # Sample GPU memory periodically
                     if step % MEMORY_CHECK_INTERVAL == 0:
