@@ -19,6 +19,12 @@ checkpoints/
 .DS_Store
 .wandb
 projects/
+!projects/v2v-ic-lora/config.yaml
+!projects/v2v-ic-lora/RECOVERY.md
+models/
+data/
+IC_LORA_TRAINING_handoff.md
+testing-clip*.mp4
 tmp
 wandb/
 

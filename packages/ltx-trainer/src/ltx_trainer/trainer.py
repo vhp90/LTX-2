@@ -280,8 +280,8 @@ class LtxvTrainer:
                         metrics.update(self._sigma_tracker.get_metrics())
                         self._log_metrics(metrics)
 
-                    # Fallback logging when progress bars are disabled
-                    if disable_progress_bars and IS_MAIN_PROCESS and self._global_step % 20 == 0:
+                    # Explicit step progress logging (every 5 steps)
+                    if IS_MAIN_PROCESS and (self._global_step % 5 == 0 or self._global_step == 1):
                         elapsed = time.time() - train_start_time
                         steps_done = self._global_step - initial_step
                         if steps_done > 0:
@@ -289,11 +289,13 @@ class LtxvTrainer:
                             total_time = f"{total_estimated // 3600:.0f}h {(total_estimated % 3600) // 60:.0f}m"
                         else:
                             total_time = "calculating..."
-                        logger.info(
+                        msg = (
                             f"Step {self._global_step}/{cfg.optimization.steps} - "
                             f"Loss: {step_loss:.4f}, LR: {current_lr:.2e}, "
-                            f"Time/Step: {step_time:.2f}s, Total Time: {total_time}",
+                            f"Time/Step: {step_time:.2f}s, ETA: {total_time}"
                         )
+                        logger.info(msg)
+                        print(msg, flush=True)
 
                     # Sample GPU memory periodically
                     if step % MEMORY_CHECK_INTERVAL == 0:
@@ -965,11 +967,9 @@ class LtxvTrainer:
             # Save to disk
             self._accelerator.save(full_state_dict, saved_weights_path)
 
-        rel_path = saved_weights_path.relative_to(self._config.output_dir)
-        logger.info(f"💾 {prefix.capitalize()} weights for step {self._global_step} saved in {rel_path}")
-
-        self._checkpoint_paths.append(saved_weights_path)
-        self._cleanup_checkpoints()
+        if saved_weights_path not in self._checkpoint_paths:
+            self._checkpoint_paths.append(saved_weights_path)
+            self._cleanup_checkpoints()
 
         self._save_training_state(save_dir)
 

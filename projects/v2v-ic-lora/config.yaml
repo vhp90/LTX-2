@@ -1,0 +1,86 @@
+acceleration:
+  load_text_encoder_in_8bit: false
+  mixed_precision_mode: bf16
+  offload_optimizer_during_validation: false
+  quantization: null
+checkpoints:
+  interval: 250
+  keep_last_n: 100
+  precision: bfloat16
+data:
+  num_dataloader_workers: 2
+  preprocessed_data_root: /teamspace/studios/this_studio/LTX-2/projects/v2v-ic-lora/.precomputed
+flow_matching:
+  timestep_sampling_mode: shifted_logit_normal
+  timestep_sampling_params: {}
+hub:
+  hub_model_id: null
+  push_to_hub: false
+lora:
+  alpha: 32
+  dropout: 0.0
+  rank: 32
+  target_modules:
+  - attn1.to_k
+  - attn1.to_q
+  - attn1.to_v
+  - attn1.to_out.0
+  - attn2.to_k
+  - attn2.to_q
+  - attn2.to_v
+  - attn2.to_out.0
+  - ff.net.0.proj
+  - ff.net.2
+model:
+  load_checkpoint: null
+  model_path: /teamspace/studios/this_studio/LTX-2/models/sulphur_dev_bf16.safetensors
+  text_encoder_path: /teamspace/studios/this_studio/LTX-2/models/gemma-3-12b-it
+  training_mode: lora
+optimization:
+  batch_size: 1
+  enable_gradient_checkpointing: true
+  gradient_accumulation_steps: 2
+  learning_rate: 0.0002
+  max_grad_norm: 1.0
+  optimizer_type: adamw
+  scheduler_params: {}
+  scheduler_type: linear
+  steps: 3000
+output_dir: /teamspace/studios/this_studio/LTX-2/projects/v2v-ic-lora/outputs
+seed: 42
+training_strategy:
+  name: flexible
+  video:
+    conditions:
+    - latents_dir: reference_latents
+      probability: 1.0
+      type: reference
+    is_generated: true
+    latents_dir: latents
+validation:
+  frame_rate: 24.0
+  generate_audio: false
+  guidance_scale: 4.0
+  inference_steps: 30
+  interval: 500
+  negative_prompt: worst quality, inconsistent motion, blurry, jittery, distorted
+  samples:
+  - conditions:
+    - downscale_factor: 1
+      include_in_output: true
+      temporal_scale_factor: 1
+      type: reference
+      video: /teamspace/studios/this_studio/LTX-2/data/references/testing-clip1-processed.mp4
+    prompt: Clothesoff remove all clothes
+  seed: 42
+  skip_initial_validation: true
+  stg_blocks:
+  - 29
+  stg_mode: stg_v
+  stg_scale: 1.0
+  video_dims:
+  - 544
+  - 960
+  - 81
+wandb:
+  enabled: false
