@@ -39,13 +39,13 @@ model:
 optimization:
   batch_size: 1
   enable_gradient_checkpointing: true
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 2
   learning_rate: 0.0002
   max_grad_norm: 1.0
   optimizer_type: adamw
   scheduler_params: {}
   scheduler_type: linear
-  steps: 1500
+  steps: 3000
 output_dir: /teamspace/studios/this_studio/LTX-2/projects/v2v-ic-lora/outputs
 seed: 42
 training_strategy:

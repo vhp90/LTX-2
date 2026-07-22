@@ -189,6 +189,8 @@ class TrainingSupervisor:
         if state_path.exists():
             shutil.copy2(state_path, stage_dir / state_path.name)
         shutil.copy2(self.config_path, stage_dir / "config.yaml")
+        if not self.manifest_path.exists():
+            self.save_manifest(manifest)
         shutil.copy2(self.manifest_path, stage_dir / "run_manifest.json")
 
         model_manifest = Path("models/model_manifest.json")
